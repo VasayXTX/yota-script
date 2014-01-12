@@ -1,122 +1,171 @@
 var page = require('webpage').create();
-var args = require('system').args;
+var args = require('system').args.slice(1);
+var fs = require('fs');
 
-var login = args[1];
-var password = args[2];
-var command = args[3];
-var speed = args[4];
+var START_URL = 'https://my.yota.ru/selfcare/login',
+    TIMEOUT = 30 * 1000,
+    WAITFOR_INTERVAL = 250;
 
-function waitFor(testFx, onReady) {
-    var start = new Date().getTime(), condition = false, interval = setInterval(function () {
-        if ((new Date().getTime() - start < 30000) && !condition) {
-            condition = testFx();
-        } else {
-            if (!condition) {
-                console.log("'waitFor()' timeout");
-                phantom.exit(1);
-            } else {
-                onReady();
-                clearInterval(interval);
-            }
-        }
-    }, 250);
+// Get credentials from file
+var creds = JSON.parse(fs.read(args.shift()));
+var login = creds.login,
+    password = creds.password;
+
+var command = args.shift();
+
+if (!login || !password) {
+    // error in config
+    console.log('Undefined login or password');
+    phantom.exit(1);
 }
 
-page.open('https://my.yota.ru/', function (status) {
+function waitFor(testFx, onReady) {
+    var start = new Date().getTime(),
+        interval = setInterval(
+            function () {
+                if (new Date().getTime() - start >= TIMEOUT) {
+                    console.log("'waitFor()' timeout");
+                    phantom.exit(1);
+                }
+                if (testFx()) {
+                    onReady();
+                    clearInterval(interval);
+                }
+            },
+           WAITFOR_INTERVAL
+        );
+}
+
+var showHelp = function () {
+    console.log('help');
+};
+
+var getCurrentTariff = function (page) {
+    return page.evaluate(function () {
+        var result = '',
+            $form = $('.tariff-choice-form'),
+            productId = $form.find('input[name="product"]').val(),
+            offerCode = $form.find('input[name="offerCode"]').val(),
+            steps = window.sliderData[productId].steps;
+        for (var i = 0; i < steps.length; i++) {
+            if (steps[i].code == offerCode) {
+                result = steps[i].name + '(остаток ' + steps[i].remainNumber + ' ' + steps[i].remainString + ')';
+                break;
+            }
+        }
+        return result;
+    });
+};
+
+var getAllTariffs = function (page) {
+    return page.evaluate(function () {
+        var variants = [],
+            $form = $('.tariff-choice-form'),
+            productId = $form.find('input[name="product"]').val(),
+            offerCode = $form.find('input[name="offerCode"]').val(),
+            steps = window.sliderData[productId].steps;
+
+        $.each(steps, function (i, s) {
+            variants.push(
+                (/max/.test(s.speedNumber) ? 'max : ' : s.speedNumber + ' : ') + (s.name || s.description) + ' (остаток ' + s.remainNumber + ' ' + s.remainString + ')' + (s.code === offerCode ? ' * текущий тариф' : ''));
+        });
+        return variants;
+    });
+};
+
+var changeTariff = function (page, speed) {
+    return page.evaluate(function (speed) {
+        var $form = $('.tariff-choice-form')
+            productId = $form.find('input[name="product"]').val(),
+            steps = sliderData[productId].steps,
+            currentOfferCode = $form.find('input[name="offerCode"]').val(),
+            offerCode = null,
+            isDisablingAutoprolong = false;
+
+        $.each(steps, function (i, s) {
+            if (
+                s.speedNumber === speed ||
+                (speed === 'max' && s.speedNumber.indexOf('max') !== -1)
+            ) {
+                offerCode = s.code;
+                isDisablingAutoprolong = s.isDisablingAutoprolong;
+            }
+        });
+
+        if (offerCode && currentOfferCode !== offerCode) {
+            $form.find('[name="offerCode"]').val(offerCode);
+            $form.submit();
+        }
+        return offerCode;
+    }, speed);
+};
+
+var commandsHandlers = {
+
+    info: function (page, onSuccess, onFail) {
+        var curTariff = getCurrentTariff(page);
+        console.log(curTariff);
+        onSuccess();
+    },
+
+    list: function (page, onSuccess, onFail) {
+        var tariffs = getAllTariffs(page);
+        for (var i = 0; i < tariffs.length; ++i) {
+            console.log(tariffs[i]);
+        }
+        console.log(curTariff);
+        onSuccess();
+    },
+
+    set: function (page, onSuccess, onFail) {
+        var speed = args.shift(),
+            newOfferCode;
+        if (!speed) onFail();
+        newOfferCode = changeTariff(page, speed);
+        waitFor(function () {
+            return page.evaluate(function (newOfferCode) {
+                return $('input[name="offerCode"]').val() === newOfferCode;
+            }, newOfferCode)
+        }, function () {
+            console.log('Changed!! New offers code is ' + newOfferCode);
+            onSuccess();
+
+        });
+    }
+
+};
+
+page.open(START_URL, function (status) {
     if (status !== 'success') {
         console.log('Unable to access network');
+        phantom.exit(1);
     }
-    else {
-        if (!login || !password || !command) {
-            console.log("Неверно заданы аргументы\n");
-            console.log("Usage: phantomjs ./yota.js login password [ check | list | set <desired-speed> ]");
-            console.log("\tcheck\t- Показывает текущий план и остаток дней");
-            console.log("\tlist\t- Показывает список доступных скоростей для команды set");
-            console.log("\tset\t- Устанавливает скорость Интернета");
-            phantom.exit();
-        } else {
-            page.evaluate(function (login, password) {
-                $(":text[name=IDToken1]").val(login);
-                $(":password[name=IDToken3]").val(password);
-                $("#doSubmitLoginForm").click();
-            }, login, password);
-            waitFor(function () {
-                return page.evaluate(function () {
-                    return $(".tariff-choice-form").is(":visible");
-                });
-            }, function () {
-                switch (command) {
-                    case 'list' :
-                        var variants = page.evaluate(function () {
-                            var variants = [];
-                            var f = $('.tariff-choice-form');
-                            var steps = sliderData[f.find('input[name="product"]').val()].steps;
-                            var offerCode = f.find('input[name="offerCode"]').val();
 
-                            for (var i = 0; i < steps.length; i++) {
-                                var speedNumber = steps[i].speedNumber;
+    // SignIn
+    page.evaluate(function (login, password) {
+        $(":text[name=IDToken1]").val(login);
+        $(":password[name=IDToken3]").val(password);
+        $("#doSubmitLoginForm").click();
+    }, login, password);
 
-                                variants[i] = (/max/.test(speedNumber) ? 'max : ' : speedNumber + ' : ') + (steps[i].name || steps[i].description) + ' (остаток ' + steps[i].remainNumber + ' ' + steps[i].remainString + ')' + (steps[i].code == offerCode ? ' * текущий тариф' : '');
-                            }
-                            return variants;
-                        });
-                        for (var i = 0; i < variants.length; i++) {
-                            console.log(variants[i]);
-                        }
-                        phantom.exit();
-                        break;
-                    case 'set' :
-                        var newOfferCode = page.evaluate(function (speed) {
-                            var f = $('.tariff-choice-form');
-                            var steps = sliderData[f.find('input[name="product"]').val()].steps;
-                            var currentOfferCode = f.find('input[name="offerCode"]').val();
-                            var offerCode = null;
-                            var isDisablingAutoprolong = false;
-                            for (var i = 0; i < steps.length; i++) {
-                                if (steps[i].speedNumber == speed || (speed == 'max' && steps[i].speedNumber.contains('max'))) {
-                                    offerCode = steps[i].code;
-                                    isDisablingAutoprolong = steps[i].isDisablingAutoprolong;
-                                }
-                            }
-                            if (offerCode && currentOfferCode != offerCode) {
-                                f.find("form").append("<input type='hidden' name='isDisablingAutoprolong' value='" + isDisablingAutoprolong + "'/>");
-                                f.find('[name="offerCode"]').val(offerCode);
-                                f.find('[name="productOfferingCode"]').val(offerCode);
-                                f.submit();
-                            }
-                            return offerCode;
-                        }, speed);
-                        waitFor(function () {
-                                return page.evaluate(function (oc) {
-                                    var f = $('.tariff-choice-form');
-                                    return oc == f.find('input[name="offerCode"]').val();
-                                }, newOfferCode)
-                            },
-                            function () {
-                                phantom.exit();
-
-                            });
-                        break;
-                    default:
-                    case 'check' :
-                        var current = page.evaluate(function () {
-                            var result = '';
-                            var f = $('.tariff-choice-form');
-                            var steps = sliderData[f.find('input[name="product"]').val()].steps;
-                            var offerCode = f.find('input[name="offerCode"]').val();
-                            for (var i = 0; i < steps.length; i++) {
-                                if (steps[i].code == offerCode) {
-                                    result = steps[i].name + '(остаток ' + steps[i].remainNumber + ' ' + steps[i].remainString + ')';
-                                    break;
-                                }
-                            }
-                            return result;
-                        });
-                        console.log(current);
-                        phantom.exit();
-                        break;
-                }
+    waitFor(
+        function () {
+            return page.evaluate(function () {
+                return window.$ && $(".tariff-choice-form").is(":visible");
             });
+        },
+        function () {
+            if (!commandsHandlers.hasOwnProperty(command)) {
+                phantom.exit(1);
+            }
+            var onSuccess = function () {
+                phantom.exit();
+            };
+            var onFail = function () {
+                phantom.exit(1);
+            };
+            commandsHandlers[command](page, onSuccess, onFail);
         }
-    }
+    );
 });
+
