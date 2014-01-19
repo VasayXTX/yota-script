@@ -1,4 +1,3 @@
 #!/bin/bash
 
 phantomjs --load-images=false yota.js credentials.json $@
-
