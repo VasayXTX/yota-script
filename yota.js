@@ -6,39 +6,46 @@ var START_URL = 'https://my.yota.ru/selfcare/login',
     TIMEOUT = 30 * 1000,
     WAITFOR_INTERVAL = 250;
 
+var showHelp = function () {
+    var msg = 'Usage: phantomjs yota.js credentials.json command\n' +
+        'Available commands:\n' +
+        '\tinfo\t\t- show information about current tariff\n' +
+        '\tlist\t\t- show list of all available tariffs\n' +
+        '\tset speed\t- change tariff to specified speed';
+    console.log(msg);
+    phantom.exit(1);
+};
+
 // Get credentials from file
-var creds = JSON.parse(fs.read(args.shift()));
+var file = args.shift();
+if (!file) {
+    showHelp();
+}
+var creds = JSON.parse(fs.read(file));
+
 var login = creds.login,
     password = creds.password;
 
 var command = args.shift();
 
 if (!login || !password) {
-    // error in config
-    console.log('Undefined login or password');
+    console.log('Login or password aren\'t specified in ' + file);
     phantom.exit(1);
 }
 
 function waitFor(testFx, onReady) {
-    var start = new Date().getTime(),
-        interval = setInterval(
-            function () {
-                if (new Date().getTime() - start >= TIMEOUT) {
-                    console.log("'waitFor()' timeout");
-                    phantom.exit(1);
-                }
-                if (testFx()) {
-                    onReady();
-                    clearInterval(interval);
-                }
-            },
-           WAITFOR_INTERVAL
-        );
+    var start = new Date().getTime();
+    var interval = setInterval(function () {
+        if (new Date().getTime() - start >= TIMEOUT) {
+            console.log("'waitFor()' timeout");
+            phantom.exit(1);
+        }
+        if (testFx()) {
+            onReady();
+            clearInterval(interval);
+        }
+    }, WAITFOR_INTERVAL);
 }
-
-var showHelp = function () {
-    console.log('help');
-};
 
 var getCurrentTariff = function (page) {
     return page.evaluate(function () {
@@ -121,15 +128,17 @@ var commandsHandlers = {
             newOfferCode;
         if (!speed) onFail();
         newOfferCode = changeTariff(page, speed);
-        waitFor(function () {
-            return page.evaluate(function (newOfferCode) {
-                return $('input[name="offerCode"]').val() === newOfferCode;
-            }, newOfferCode)
-        }, function () {
-            console.log('Changed!! New offers code is ' + newOfferCode);
-            onSuccess();
-
-        });
+        waitFor(
+            function () {
+                return page.evaluate(function (newOfferCode) {
+                    return $('input[name="offerCode"]').val() === newOfferCode;
+                }, newOfferCode)
+            },
+            function () {
+                console.log('Changed!! New offers code is ' + newOfferCode);
+                onSuccess();
+            }
+        );
     }
 
 };
@@ -155,6 +164,7 @@ page.open(START_URL, function (status) {
         },
         function () {
             if (!commandsHandlers.hasOwnProperty(command)) {
+                showHelp();
                 phantom.exit(1);
             }
             var onSuccess = function () {
