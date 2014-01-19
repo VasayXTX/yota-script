@@ -113,7 +113,6 @@ var commandsHandlers = {
         for (var i = 0; i < tariffs.length; ++i) {
             console.log(tariffs[i]);
         }
-        console.log(curTariff);
         onSuccess();
     },
 
