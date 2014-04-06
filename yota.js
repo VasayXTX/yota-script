@@ -152,7 +152,7 @@ page.open(START_URL, function (status) {
     // SignIn
     page.evaluate(function (login, password) {
         $(":text[name=IDToken1]").val(login);
-        $(":password[name=IDToken3]").val(password);
+        $(":password[name=IDToken2]").val(password);
         $("#doSubmitLoginForm").click();
     }, login, password);
 
